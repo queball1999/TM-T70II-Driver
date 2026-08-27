@@ -1,0 +1,166 @@
+*PPD-Adobe: "4.3"
+*%========================================================================
+*% PPD for the EPSON TM-T70II thermal receipt printer
+*% Pipeline:  application -> ... -> application/vnd.cups-raster
+*%                        -> rastertoescpos -> tmt70 (backend) -> printer
+*% Project: epson-tmt70ii-escpos      SPDX-License-Identifier: GPL-2.0-or-later
+*%========================================================================
+*FormatVersion: "4.3"
+*FileVersion: "1.0.0"
+*LanguageVersion: English
+*LanguageEncoding: ISOLatin1
+*PCFileName: "EPTMT70II.PPD"
+*Manufacturer: "EPSON"
+*Product: "(TM-T70II)"
+*cupsVersion: 2.4
+*cupsModelNumber: 70
+*ModelName: "EPSON TM-T70II"
+*ShortNickName: "EPSON TM-T70II ESC/POS"
+*NickName: "EPSON TM-T70II (ESC/POS, epson-tmt70ii-escpos)"
+*PSVersion: "(3010.000) 0"
+*LanguageLevel: "3"
+*ColorDevice: False
+*DefaultColorSpace: Gray
+*FileSystem: False
+*Throughput: "1"
+*LandscapeOrientation: Plus90
+*TTRasterizer: Type42
+*cupsFilter: "application/vnd.cups-raster 33 rastertoescpos"
+*cupsManualCopies: True
+
+*% ---- printer capabilities -------------------------------------------------
+*DefaultResolution: 180dpi
+*OpenUI *Resolution/Resolution: PickOne
+*OrderDependency: 5 AnySetup *Resolution
+*DefaultResolution: 180dpi
+*Resolution 180dpi/180 x 180 dpi: "<</HWResolution[180 180]>>setpagedevice"
+*CloseUI: *Resolution
+
+*% ---- colour / bit depth (steers the raster generator) --------------------
+*OpenUI *ColorModel/Print Mode: PickOne
+*OrderDependency: 10 AnySetup *ColorModel
+*DefaultColorModel: KGray
+*ColorModel KGray/1-bit black (recommended): "<</cupsColorSpace 3/cupsColorOrder 0/cupsBitsPerColor 1/cupsBitsPerPixel 1/cupsCompression 0/cupsRowCount 0/cupsRowFeed 0/cupsRowStep 0>>setpagedevice"
+*ColorModel Gray/8-bit grayscale: "<</cupsColorSpace 3/cupsColorOrder 0/cupsBitsPerColor 8/cupsBitsPerPixel 8/cupsCompression 0/cupsRowCount 0/cupsRowFeed 0/cupsRowStep 0>>setpagedevice"
+*CloseUI: *ColorModel
+
+*% ---- media --------------------------------------------------------------
+*% width entries: 80 mm roll (72 mm printable) and 58 mm roll (~50.8 mm)
+*OpenUI *PageSize/Media Size: PickOne
+*OrderDependency: 20 AnySetup *PageSize
+*DefaultPageSize: X80mm
+*PageSize X80mm/80 mm x 297 mm: "<</PageSize[227 842]/ImagingBBox null>>setpagedevice"
+*PageSize X80mmLong/80 mm x 1500 mm roll: "<</PageSize[227 4252]/ImagingBBox null>>setpagedevice"
+*PageSize X58mm/58 mm x 297 mm: "<</PageSize[164 842]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageSize
+
+*OpenUI *PageRegion/Media Size: PickOne
+*OrderDependency: 20 AnySetup *PageRegion
+*DefaultPageRegion: X80mm
+*PageRegion X80mm/80 mm x 297 mm: "<</PageSize[227 842]/ImagingBBox null>>setpagedevice"
+*PageRegion X80mmLong/80 mm x 1500 mm roll: "<</PageSize[227 4252]/ImagingBBox null>>setpagedevice"
+*PageRegion X58mm/58 mm x 297 mm: "<</PageSize[164 842]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageRegion
+
+*DefaultImageableArea: X80mm
+*ImageableArea X80mm/80 mm x 297 mm: "11 0 215 842"
+*ImageableArea X80mmLong/80 mm x 1500 mm roll: "11 0 215 4252"
+*ImageableArea X58mm/58 mm x 297 mm: "10 0 154 842"
+
+*DefaultPaperDimension: X80mm
+*PaperDimension X80mm/80 mm x 297 mm: "227 842"
+*PaperDimension X80mmLong/80 mm x 1500 mm roll: "227 4252"
+*PaperDimension X58mm/58 mm x 297 mm: "164 842"
+
+*% ---- custom (variable length) -----------------------------------------
+*HWMargins: 11 0 12 0
+*MaxMediaWidth: "227"
+*MaxMediaHeight: "9284"
+*CustomPageSize True: "pop pop pop <</PageSize[5 -2 roll]/ImagingBBox null>>setpagedevice"
+*ParamCustomPageSize Width: 1 points 100 227
+*ParamCustomPageSize Height: 2 points 100 9284
+*ParamCustomPageSize WidthOffset: 3 points 0 0
+*ParamCustomPageSize HeightOffset: 4 points 0 0
+*ParamCustomPageSize Orientation: 5 int 0 0
+
+*%========================================================================
+*%  Driver options consumed by rastertoescpos  (passed as Key=Choice)
+*%========================================================================
+
+*OpenGroup: TMT70/TM-T70II Options
+
+*OpenUI *Density/Print Density: PickOne
+*OrderDependency: 30 AnySetup *Density
+*DefaultDensity: normal
+*Density light/Light: ""
+*Density normal/Normal: ""
+*Density dark/Dark: ""
+*CloseUI: *Density
+
+*OpenUI *PrintSpeed/Print Speed: PickOne
+*OrderDependency: 31 AnySetup *PrintSpeed
+*DefaultPrintSpeed: auto
+*PrintSpeed auto/Automatic: ""
+*PrintSpeed 1/1 (slowest, best quality): ""
+*PrintSpeed 2/2: ""
+*PrintSpeed 3/3: ""
+*PrintSpeed 4/4 (fastest): ""
+*CloseUI: *PrintSpeed
+
+*OpenUI *Rotate180/Rotate 180 degrees: Boolean
+*OrderDependency: 32 AnySetup *Rotate180
+*DefaultRotate180: False
+*Rotate180 False/Off: ""
+*Rotate180 True/On: ""
+*CloseUI: *Rotate180
+
+*OpenUI *BlankReduction/Blank Space Reduction: PickOne
+*OrderDependency: 33 AnySetup *BlankReduction
+*DefaultBlankReduction: topbottom
+*BlankReduction off/Off: ""
+*BlankReduction topbottom/Trim top and bottom: ""
+*BlankReduction all/Trim top/bottom + collapse gaps: ""
+*CloseUI: *BlankReduction
+
+*OpenUI *LeftMargin/Left Margin: PickOne
+*OrderDependency: 34 AnySetup *LeftMargin
+*DefaultLeftMargin: 0mm
+*LeftMargin 0mm/0 mm: ""
+*LeftMargin 2mm/2 mm: ""
+*LeftMargin 3mm/3 mm: ""
+*LeftMargin 5mm/5 mm: ""
+*LeftMargin 10mm/10 mm: ""
+*CloseUI: *LeftMargin
+
+*OpenUI *EndOfJobCut/Cut After Job: PickOne
+*OrderDependency: 35 AnySetup *EndOfJobCut
+*DefaultEndOfJobCut: partial
+*EndOfJobCut partial/Partial cut: ""
+*EndOfJobCut full/Full cut: ""
+*EndOfJobCut none/No cut: ""
+*CloseUI: *EndOfJobCut
+
+*OpenUI *FeedBeforeCut/Feed Before Cut: PickOne
+*OrderDependency: 36 AnySetup *FeedBeforeCut
+*DefaultFeedBeforeCut: 3mm
+*FeedBeforeCut 0mm/0 mm: ""
+*FeedBeforeCut 3mm/3 mm: ""
+*FeedBeforeCut 6mm/6 mm: ""
+*FeedBeforeCut 12mm/12 mm: ""
+*CloseUI: *FeedBeforeCut
+
+*OpenUI *CodePage/Character Code Page: PickOne
+*OrderDependency: 37 AnySetup *CodePage
+*DefaultCodePage: 0
+*CodePage 0/PC437 (USA, Std. Europe): ""
+*CodePage 16/WPC1252: ""
+*CodePage 2/PC850 (Multilingual): ""
+*CodePage 19/PC858 (Euro): ""
+*CloseUI: *CodePage
+
+*CloseGroup: TMT70
+
+*%========================================================================
+*DefaultFont: Courier
+*Font Courier: Standard "(1.05)" Standard ROM
+*% end of EPSON_TM-T70II.ppd

@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# rastertoescpos -- CUPS raster -> Epson ESC/POS filter for the TM-T70II
+#
+# Copyright (C) 2026  (project: epson-tmt70ii-escpos)
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# CUPS calls a filter as:
+#     rastertoescpos  job-id  user  title  copies  options  [file]
+# stdin (or the file argument) is "application/vnd.cups-raster".
+# stdout is the raw ESC/POS byte stream handed to the backend.
+#
+# Design notes: docs/PROTOCOL.md
+#   * raster  -> GS ( L  fn=112 (store to buffer, raster format) + fn=50 (print)
+#   * cut     -> GS V 65/66 n
+#   * margins -> GS L (left) / GS W (print area width) + ESC $ per band
+#   * 180deg  -> rotate the bitmap in software (device independent)
+#   * copies  -> handled here (PPD sets *cupsManualCopies: True)
+
+import io
+import os
+import sys
+import struct
+
+# --------------------------------------------------------------------------- #
+# logging (CUPS captures stderr into the printer error_log with these levels)
+# --------------------------------------------------------------------------- #
+
+def _log(level, *msg):
+    sys.stderr.write(f"{level}: " + " ".join(str(m) for m in msg) + "\n")
+    sys.stderr.flush()
+
+def DEBUG(*m): _log("DEBUG", *m)
+def INFO(*m):  _log("INFO", *m)
+def WARN(*m):  _log("WARNING", *m)
+def ERROR(*m): _log("ERROR", *m)
+
+
+# --------------------------------------------------------------------------- #
+# printer constants
+# --------------------------------------------------------------------------- #
+
+DPI = 180                     # TM-T70II: 180 x 180 dpi
+MAX_DOTS = 512                # full carriage width in dots
+BAND_ROWS = 128               # rows of raster per GS ( L block (<= 256; keep modest)
+MM = DPI / 25.4               # dots per mm
+
+
+# --------------------------------------------------------------------------- #
+# CUPS raster reader (v2 "RaS2" / v3 "RaS3", both byte orders, uncompressed)
+# --------------------------------------------------------------------------- #
+
+class RasterError(RuntimeError):
+    pass
+
+
+class CupsRaster:
+    HEADER_LEN = 1796                       # cups_page_header2_t
+
+    # byte offsets into the page header we care about (see docs/PROTOCOL.md)
+    _U = {
+        "HWResolution0": 276, "HWResolution1": 280,
+        "NumCopies": 340,
+        "cupsWidth": 372, "cupsHeight": 376,
+        "cupsBitsPerColor": 384, "cupsBitsPerPixel": 388,
+        "cupsBytesPerLine": 392, "cupsColorOrder": 396,
+        "cupsColorSpace": 400, "cupsCompression": 404,
+        "cupsNumColors": 420,
+    }
+    _STR = {"cupsPageSizeName": (1732, 64)}
+
+    def __init__(self, stream):
+        self.s = stream
+        magic = self.s.read(4)
+        if magic in (b"RaS2", b"RaS3"):
+            self.be = True
+        elif magic in (b"2SaR", b"3SaR"):
+            self.be = False
+        elif magic in (b"RaSt", b"tSaR"):
+            raise RasterError("CUPS raster v1 is not supported; a modern "
+                              "cups-filters (v2/v3 raster) is required")
+        else:
+            raise RasterError(f"not a CUPS raster stream (magic={magic!r})")
+        self.order = ">" if self.be else "<"
+        DEBUG(f"raster magic={magic!r} byteorder={'BE' if self.be else 'LE'}")
+
+    def _u32(self, hdr, off):
+        return struct.unpack_from(self.order + "I", hdr, off)[0]
+
+    def pages(self):
+        """Yield (info_dict, bytearray bitmap_1bpp_MSBfirst, width, height)."""
+        while True:
+            hdr = self.s.read(self.HEADER_LEN)
+            if len(hdr) == 0:
+                return
+            if len(hdr) != self.HEADER_LEN:
+                raise RasterError(f"short page header ({len(hdr)} bytes)")
+
+            info = {k: self._u32(hdr, off) for k, off in self._U.items()}
+            for k, (off, ln) in self._STR.items():
+                info[k] = hdr[off:off + ln].split(b"\0", 1)[0].decode("latin-1")
+
+            w = info["cupsWidth"]
+            h = info["cupsHeight"]
+            bpp = info["cupsBitsPerPixel"]
+            bpc = info["cupsBitsPerColor"]
+            bpl = info["cupsBytesPerLine"]
+            cspace = info["cupsColorSpace"]
+            comp = info["cupsCompression"]
+            DEBUG(f"page w={w} h={h} bpp={bpp} bpc={bpc} bpl={bpl} "
+                  f"cspace={cspace} comp={comp} res={info['HWResolution0']}")
+
+            if comp != 0:
+                raise RasterError("compressed CUPS raster is not supported; "
+                                  "set the queue to uncompressed (v3) raster")
+
+            raw = self.s.read(bpl * h)
+            if len(raw) != bpl * h:
+                raise RasterError("truncated raster body")
+
+            bmp = self._to_1bpp(raw, w, h, bpl, bpp, bpc, cspace)
+            yield info, bmp, w, h
+
+    @staticmethod
+    def _to_1bpp(raw, w, h, bpl, bpp, bpc, cspace):
+        """Return h*ceil(w/8) bytes, MSB-first, bit set = BLACK dot."""
+        out_bpl = (w + 7) // 8
+        out = bytearray(out_bpl * h)
+
+        # CUPS_CSPACE_W = 0 (luminance, 0=black..max=white)
+        # CUPS_CSPACE_K = 3 (ink,       0=white..max=black)
+        # CUPS_CSPACE_sGray = 18 (like W)
+        black_is_high = (cspace == 3)
+
+        if bpp == 1:
+            # one bit per pixel, single channel
+            for y in range(h):
+                irow = raw[y * bpl:(y + 1) * bpl]
+                orow_off = y * out_bpl
+                if black_is_high:
+                    for b in range(min(bpl, out_bpl)):
+                        out[orow_off + b] = irow[b]
+                else:
+                    for b in range(min(bpl, out_bpl)):
+                        out[orow_off + b] = irow[b] ^ 0xFF
+                # mask any padding bits in the last byte
+                extra = out_bpl * 8 - w
+                if extra:
+                    out[orow_off + out_bpl - 1] &= (0xFF << extra) & 0xFF
+            return out
+
+        if bpp in (8, 16, 24, 32) and bpc == 8:
+            chan = bpp // 8
+            thresh = 128
+            for y in range(h):
+                base = y * bpl
+                orow_off = y * out_bpl
+                acc = 0
+                nbits = 0
+                ob = orow_off
+                for x in range(w):
+                    p = raw[base + x * chan]           # first channel is enough
+                    if not black_is_high:
+                        p = 255 - p
+                    bit = 1 if p >= thresh else 0
+                    acc = (acc << 1) | bit
+                    nbits += 1
+                    if nbits == 8:
+                        out[ob] = acc
+                        ob += 1
+                        acc = 0
+                        nbits = 0
+                if nbits:
+                    out[ob] = acc << (8 - nbits)
+            return out
+
+        raise RasterError(f"unsupported raster pixel format bpp={bpp} bpc={bpc}")
+
+
+# --------------------------------------------------------------------------- #
+# bitmap helpers (operate on h*ceil(w/8) MSB-first buffers)
+# --------------------------------------------------------------------------- #
+
+def row_bytes(w):
+    return (w + 7) // 8
+
+
+def get_row(bmp, w, y):
+    rb = row_bytes(w)
+    return bmp[y * rb:(y + 1) * rb]
+
+
+def row_is_blank(bmp, w, y):
+    return not any(get_row(bmp, w, y))
+
+
+def rotate180(bmp, w, h):
+    """Rotate a 1bpp MSB-first bitmap 180 degrees."""
+    rb = row_bytes(w)
+    out = bytearray(rb * h)
+    # reverse bit order within a width-w field, then reverse row order
+    # precompute reversed-byte table
+    rev = [int(f"{i:08b}"[::-1], 2) for i in range(256)]
+    pad = rb * 8 - w
+    for y in range(h):
+        src = bmp[(h - 1 - y) * rb:(h - y) * rb]
+        # reverse bytes + bits
+        rr = bytes(rev[b] for b in reversed(src))
+        # now the meaningful bits are shifted left by `pad`; shift right
+        if pad:
+            carry = 0
+            rr2 = bytearray(rb)
+            for i in range(rb):
+                v = (carry << 8) | rr[i]
+                rr2[i] = (v >> pad) & 0xFF
+                carry = rr[i] & ((1 << pad) - 1)
+            rr = bytes(rr2)
+        out[y * rb:(y + 1) * rb] = rr
+    return out
+
+
+def blank_reduce(bmp, w, h, mode):
+    """mode: 'off' | 'topbottom' | 'all'.  Returns (bmp, h)."""
+    if mode == "off" or h == 0:
+        return bmp, h
+    rb = row_bytes(w)
+
+    top = 0
+    while top < h and row_is_blank(bmp, w, top):
+        top += 1
+    bot = h
+    while bot > top and row_is_blank(bmp, w, bot - 1):
+        bot -= 1
+    if top == 0 and bot == h and mode == "topbottom":
+        return bmp, h
+
+    rows = list(range(top, bot))
+    if mode == "all":
+        # collapse runs of >2 interior blank rows down to 2
+        kept = []
+        run = 0
+        for y in rows:
+            if row_is_blank(bmp, w, y):
+                run += 1
+                if run <= 2:
+                    kept.append(y)
+            else:
+                run = 0
+                kept.append(y)
+        rows = kept
+
+    out = bytearray(rb * len(rows))
+    for i, y in enumerate(rows):
+        out[i * rb:(i + 1) * rb] = bmp[y * rb:(y + 1) * rb]
+    return out, len(rows)
+
+
+def clamp_width(bmp, w, h, max_w):
+    if w <= max_w:
+        return bmp, w
+    src_rb = row_bytes(w)
+    dst_rb = row_bytes(max_w)
+    out = bytearray(dst_rb * h)
+    for y in range(h):
+        out[y * dst_rb:(y + 1) * dst_rb] = bmp[y * src_rb:y * src_rb + dst_rb]
+        extra = dst_rb * 8 - max_w
+        if extra:
+            out[y * dst_rb + dst_rb - 1] &= (0xFF << extra) & 0xFF
+    return out, max_w
+
+
+# --------------------------------------------------------------------------- #
+# ESC/POS writer
+# --------------------------------------------------------------------------- #
+
+ESC = b"\x1b"
+GS = b"\x1d"
+
+
+class EscposOut:
+    def __init__(self, fh):
+        self.fh = fh
+
+    def raw(self, b):
+        self.fh.write(b)
+
+    def init(self, codepage):
+        # light, self-contained init (APD does not send ESC @ - see PROTOCOL.md -
+        # but a CUPS job should not depend on prior NV state)
+        self.raw(ESC + b"@")                       # initialize
+        self.raw(ESC + b"=" + bytes([1]))          # select printer
+        self.raw(ESC + b"2")                       # default line spacing
+        self.raw(GS + b"b" + bytes([1]))           # smoothing on
+        if codepage is not None:
+            self.raw(ESC + b"t" + bytes([codepage & 0xFF]))
+
+    def density(self, level):                      # level: 'light'|'normal'|'dark'
+        n = {"light": 250, "normal": 0, "dark": 6}.get(level, 0)
+        # GS ( K  pL pH  m=49(fn) n   -> select print density
+        self.raw(GS + b"(K" + bytes([2, 0, 49, n & 0xFF]))
+
+    def speed(self, level):                        # 'auto' or '1'..'4'
+        if level in (None, "", "auto"):
+            n = 0
+        else:
+            try:
+                n = max(1, min(4, int(level)))
+            except ValueError:
+                n = 0
+        # GS ( K  pL pH  m=50(fn) n   -> select print speed
+        self.raw(GS + b"(K" + bytes([2, 0, 50, n & 0xFF]))
+
+    def left_margin(self, dots):
+        dots = max(0, int(dots))
+        self.raw(GS + b"L" + bytes([dots & 0xFF, (dots >> 8) & 0xFF]))
+
+    def print_area(self, dots):
+        dots = max(8, min(MAX_DOTS, int(dots)))
+        self.raw(GS + b"W" + bytes([dots & 0xFF, (dots >> 8) & 0xFF]))
+
+    def abs_x(self, dots):
+        dots = max(0, int(dots))
+        self.raw(ESC + b"$" + bytes([dots & 0xFF, (dots >> 8) & 0xFF]))
+
+    def feed_dots(self, n):
+        n = max(0, min(255, int(n)))
+        self.raw(ESC + b"J" + bytes([n]))
+
+    def raster_band(self, band, w, rows, x_off=0):
+        """band: ceil(w/8)*rows MSB-first, 1=black.  Emit GS ( L fn=112 + fn=50."""
+        if rows <= 0:
+            return
+        if x_off:
+            self.abs_x(x_off)
+        xb = row_bytes(w)
+        payload = bytes([48, 112,        # m=48, fn=112 (store raster to buffer)
+                         48,             # a  = 48 (monochrome)
+                         1, 1,           # bx, by = 1
+                         49,             # c  = 49 (colour 1 / black)
+                         w & 0xFF, (w >> 8) & 0xFF,
+                         rows & 0xFF, (rows >> 8) & 0xFF]) + bytes(band[:xb * rows])
+        n = len(payload)
+        if n < 0x10000:
+            self.raw(GS + b"(L" + bytes([n & 0xFF, (n >> 8) & 0xFF]) + payload)
+        else:                                      # GS 8 L for big payloads
+            self.raw(GS + b"8L" + struct.pack("<I", n) + payload)
+        self.raw(GS + b"(L" + bytes([2, 0, 48, 50]))   # fn=50 -> print buffer
+
+    def cut(self, mode, feed=0):
+        if mode == "none":
+            return
+        m = 66 if mode == "partial" else 65        # APD default is 65 (full)
+        self.raw(ESC + b"J" + bytes([0]))
+        self.raw(GS + b"V" + bytes([m, max(0, min(255, int(feed)))]))
+
+    def pulse_none(self):
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# options
+# --------------------------------------------------------------------------- #
+
+DEFAULTS = {
+    "Density": "normal",           # light | normal | dark
+    "PrintSpeed": "auto",          # auto | 1..4
+    "Rotate180": "false",
+    "BlankReduction": "topbottom", # off | topbottom | all
+    "LeftMargin": "0",             # millimetres
+    "EndOfJobCut": "partial",      # partial | full | none
+    "FeedBeforeCut": "3",          # millimetres of blank feed before the cut
+    "CodePage": "0",               # ESC t n  (0 = PC437)
+    "PageSizeDots": str(MAX_DOTS), # printable width in dots (PPD sets per PageSize)
+}
+
+_ALIASES = {                       # accept PPD-style capitalised keywords too
+    "density": "Density", "printspeed": "PrintSpeed", "rotate180": "Rotate180",
+    "blankreduction": "BlankReduction", "leftmargin": "LeftMargin",
+    "endofjobcut": "EndOfJobCut", "feedbeforecut": "FeedBeforeCut",
+    "codepage": "CodePage", "pagesizedots": "PageSizeDots",
+}
+
+
+def _canon(k):
+    return _ALIASES.get(k.lower(), k)
+
+
+def parse_ppd_defaults(path):
+    out = {}
+    try:
+        with open(path, "r", errors="replace") as fh:
+            for line in fh:
+                if not line.startswith("*Default"):
+                    continue
+                # *DefaultDensity: normal
+                try:
+                    key, val = line[len("*Default"):].split(":", 1)
+                except ValueError:
+                    continue
+                out[_canon(key.strip())] = val.strip()
+    except OSError:
+        pass
+    return out
+
+
+def parse_opt_string(s):
+    out = {}
+    if not s:
+        return out
+    for tok in s.replace("\t", " ").split(" "):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+        else:                       # boolean style: "Rotate180" / "noRotate180"
+            if tok.lower().startswith("no"):
+                k, v = tok[2:], "false"
+            else:
+                k, v = tok, "true"
+        out[_canon(k)] = v
+    return out
+
+
+def as_bool(v):
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def as_num(v, default=0.0):
+    """Pull the first number out of a PPD choice keyword like '3mm' or 'L3'."""
+    import re as _re
+    m = _re.search(r"-?\d+(?:\.\d+)?", str(v))
+    return float(m.group(0)) if m else float(default)
+
+
+# --------------------------------------------------------------------------- #
+# main
+# --------------------------------------------------------------------------- #
+
+def build(opts, raster_stream, out_fh):
+    try:
+        copies = max(1, int(opts.get("_copies", 1)))
+    except ValueError:
+        copies = 1
+
+    left_dots = int(round(as_num(opts["LeftMargin"]) * MM))
+    area_dots = int(as_num(opts["PageSizeDots"], MAX_DOTS))
+    rot = as_bool(opts["Rotate180"])
+    reduce_mode = opts["BlankReduction"].lower()
+    cut_mode = opts["EndOfJobCut"].lower()
+    feed_cut = int(round(as_num(opts["FeedBeforeCut"], 3) * MM))
+    codepage = int(as_num(opts["CodePage"], 0))
+
+    eo = EscposOut(out_fh)
+    eo.init(codepage)
+    eo.density(opts["Density"].lower())
+    eo.speed(opts["PrintSpeed"].lower())
+    eo.print_area(min(MAX_DOTS, left_dots + area_dots))
+    eo.left_margin(left_dots)
+
+    rr = CupsRaster(raster_stream)
+    page_no = 0
+    for info, bmp, w, h in rr.pages():
+        page_no += 1
+        INFO(f"page {page_no}: {w}x{h} dots")
+
+        bmp, w = clamp_width(bmp, w, h, area_dots)
+        if rot:
+            bmp = rotate180(bmp, w, h)
+        bmp, h = blank_reduce(bmp, w, h, reduce_mode)
+
+        job_copies = copies
+        while job_copies > 0:
+            job_copies -= 1
+            y = 0
+            while y < h:
+                n = min(BAND_ROWS, h - y)
+                rb = row_bytes(w)
+                band = bmp[y * rb:(y + n) * rb]
+                eo.raster_band(band, w, n, x_off=left_dots)
+                y += n
+            # separator between copies of the same page
+            if job_copies > 0:
+                eo.feed_dots(24)
+                eo.cut(cut_mode, feed_cut)
+
+    eo.cut(cut_mode, feed_cut)
+    out_fh.flush()
+
+
+def main(argv):
+    # rastertoescpos job user title copies options [file]
+    job = argv[1] if len(argv) > 1 else "?"
+    copies = argv[4] if len(argv) > 4 else "1"
+    optstr = argv[5] if len(argv) > 5 else ""
+    infile = argv[6] if len(argv) > 6 else None
+    INFO(f"rastertoescpos job={job} copies={copies} opts={optstr!r} "
+         f"file={infile or '<stdin>'}")
+
+    opts = dict(DEFAULTS)
+    ppd = os.environ.get("PPD")
+    if ppd:
+        opts.update(parse_ppd_defaults(ppd))
+    opts.update(parse_opt_string(optstr))
+    opts["_copies"] = copies
+    DEBUG("effective options:", {k: v for k, v in opts.items() if not k.startswith("_")})
+
+    if infile:
+        rin = open(infile, "rb")
+    else:
+        rin = sys.stdin.buffer
+    rout = sys.stdout.buffer
+
+    try:
+        build(opts, rin, rout)
+    except RasterError as e:
+        ERROR(str(e))
+        return 1
+    except BrokenPipeError:
+        return 0
+    except Exception as e:                          # noqa: BLE001
+        ERROR(f"unhandled: {e!r}")
+        return 1
+    finally:
+        if infile:
+            rin.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

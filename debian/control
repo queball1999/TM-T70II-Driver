@@ -1,0 +1,31 @@
+Source: epson-tmt70ii-escpos
+Section: text
+Priority: optional
+Maintainer: epson-tmt70ii-escpos project <root@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://example.invalid/epson-tmt70ii-escpos
+
+Package: epson-tmt70ii-escpos
+Architecture: all
+Depends: ${misc:Depends},
+         python3 (>= 3.8),
+         cups,
+         cups-daemon,
+         libusb-1.0-0,
+         udev
+Recommends: cups-filters | cups-filters-core-drivers,
+            ghostscript,
+            poppler-utils
+Description: CUPS driver for the EPSON TM-T70II thermal receipt printer
+ A raster CUPS driver (filter + libusb backend + PPD + udev rule) for the
+ EPSON TM-T70II 80 mm thermal receipt printer.
+ .
+ The TM-T70II USB interface is a vendor-specific class that the kernel usblp
+ driver does not bind, so this package ships its own "tmt70" backend that
+ talks to the device directly with libusb.  The "rastertoescpos" filter turns
+ the CUPS raster stream into ESC/POS graphics and exposes print density,
+ print speed, 80/58 mm media width, 180 degree rotation, blank-space
+ reduction, left margin, copies and cut behaviour as standard printer
+ preferences.

@@ -1,0 +1,45 @@
+#!/bin/sh
+# postinst for epson-tmt70ii-escpos
+set -e
+
+case "$1" in
+    configure)
+        # activate the udev rule for the vendor-class TM-T70II USB device
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules 2>/dev/null || true
+            udevadm trigger --subsystem-match=usb \
+                --attr-match=idVendor=04b8 2>/dev/null || true
+        fi
+        # let CUPS notice the new filter/backend/PPD
+        if command -v invoke-rc.d >/dev/null 2>&1; then
+            invoke-rc.d cups reload 2>/dev/null \
+                || invoke-rc.d cups restart 2>/dev/null || true
+        elif command -v systemctl >/dev/null 2>&1; then
+            systemctl reload-or-restart cups 2>/dev/null || true
+        fi
+        cat <<'EOF'
+
+epson-tmt70ii-escpos installed.
+
+  * Add yourself to the "lp" group if you are not already:
+        sudo usermod -aG lp "$USER"      (log out/in afterwards)
+
+  * Create the queue (USB):
+        lpadmin -p TM-T70II -E \
+            -v "$(lpinfo -v | awk '/tmt70:/{print $2; exit}')" \
+            -P /usr/share/ppd/epson-tmt70ii-escpos/EPSON_TM-T70II.ppd
+    ...or, if the device is not detected yet:
+        lpadmin -p TM-T70II -E -v tmt70://04b8:0202 \
+            -P /usr/share/ppd/epson-tmt70ii-escpos/EPSON_TM-T70II.ppd
+
+  * Print:
+        lp -d TM-T70II -o Density=dark -o EndOfJobCut=full file.pdf
+
+EOF
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# tmt70 -- CUPS backend for the EPSON TM-T70II receipt printer
+#
+# Copyright (C) 2026  (project: epson-tmt70ii-escpos)
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The TM-T70II USB interface (04b8:0202) is a *vendor-specific* class, so the
+# kernel usblp driver never binds and there is no /dev/usb/lp*.  This backend
+# talks to it directly with libusb (via ctypes -- no python3-usb dependency).
+#
+# Device URIs
+#   tmt70://04b8:0202            first matching TM printer on USB
+#   tmt70://04b8:0202/<serial>   a specific unit by USB serial string
+#   tmt70:/dev/usb/lp0           if the unit was switched to USB printer class
+#   socket://host:9100           network / serial-to-Ethernet adaptor
+#   file:///tmp/out.bin          write the raw stream to a file (testing)
+#
+# Env
+#   TMT70_DRYRUN=/path   also copy the exact byte stream to <path>
+#
+# CUPS backend calling convention
+#   no args         -> emit discovery lines on stdout, exit 0
+#   job user title copies options [file]   -> print; data on stdin or file arg
+
+import os
+import re
+import sys
+import time
+import errno
+import socket
+
+# CUPS backend exit codes
+OK, FAILED, AUTH, HOLD, STOP, RETRY, RETRY_CURRENT = 0, 1, 2, 3, 4, 5, 6
+
+VID = 0x04B8
+PIDS = (0x0202, 0x0E15, 0x0E03, 0x0E28)   # TM-T70II and common TM siblings
+
+
+def log(level, msg):
+    sys.stderr.write(f"{level}: {msg}\n")
+    sys.stderr.flush()
+
+def INFO(m):  log("INFO", m)
+def WARN(m):  log("WARNING", m)
+def ERROR(m): log("ERROR", m)
+def STATE(s): log("STATE", s)          # CUPS parses "STATE: +reason" / "-reason"
+
+
+# --------------------------------------------------------------------------- #
+# libusb via ctypes
+# --------------------------------------------------------------------------- #
+
+class LibUsb:
+    def __init__(self):
+        import ctypes
+        import ctypes.util
+        self.c = ctypes
+        name = ctypes.util.find_library("usb-1.0") or "libusb-1.0.so.0"
+        self.l = ctypes.CDLL(name, use_errno=True)
+        c = ctypes
+
+        class Desc(c.Structure):
+            _fields_ = [
+                ("bLength", c.c_uint8), ("bDescriptorType", c.c_uint8),
+                ("bcdUSB", c.c_uint16), ("bDeviceClass", c.c_uint8),
+                ("bDeviceSubClass", c.c_uint8), ("bDeviceProtocol", c.c_uint8),
+                ("bMaxPacketSize0", c.c_uint8), ("idVendor", c.c_uint16),
+                ("idProduct", c.c_uint16), ("bcdDevice", c.c_uint16),
+                ("iManufacturer", c.c_uint8), ("iProduct", c.c_uint8),
+                ("iSerialNumber", c.c_uint8), ("bNumConfigurations", c.c_uint8),
+            ]
+        self.Desc = Desc
+
+        L = self.l
+        L.libusb_init.argtypes = [c.c_void_p]
+        L.libusb_get_device_list.argtypes = [c.c_void_p, c.POINTER(c.POINTER(c.c_void_p))]
+        L.libusb_get_device_list.restype = c.c_ssize_t
+        L.libusb_get_device_descriptor.argtypes = [c.c_void_p, c.c_void_p]
+        L.libusb_open.argtypes = [c.c_void_p, c.POINTER(c.c_void_p)]
+        L.libusb_close.argtypes = [c.c_void_p]
+        L.libusb_get_string_descriptor_ascii.argtypes = [
+            c.c_void_p, c.c_uint8, c.c_char_p, c.c_int]
+        L.libusb_set_auto_detach_kernel_driver.argtypes = [c.c_void_p, c.c_int]
+        L.libusb_kernel_driver_active.argtypes = [c.c_void_p, c.c_int]
+        L.libusb_detach_kernel_driver.argtypes = [c.c_void_p, c.c_int]
+        L.libusb_claim_interface.argtypes = [c.c_void_p, c.c_int]
+        L.libusb_release_interface.argtypes = [c.c_void_p, c.c_int]
+        L.libusb_bulk_transfer.argtypes = [
+            c.c_void_p, c.c_uint8, c.c_char_p, c.c_int,
+            c.POINTER(c.c_int), c.c_uint]
+        L.libusb_get_active_config_descriptor.argtypes = [
+            c.c_void_p, c.c_void_p]
+        L.libusb_free_device_list.argtypes = [c.POINTER(c.POINTER(c.c_void_p)), c.c_int]
+        L.libusb_exit.argtypes = [c.c_void_p]
+        L.libusb_init.restype = c.c_int
+        L.libusb_get_string_descriptor_ascii.restype = c.c_int
+
+        self.ctx = c.c_void_p()
+        if L.libusb_init(c.byref(self.ctx)) != 0:
+            raise RuntimeError("libusb_init failed")
+
+    # -- device discovery -------------------------------------------------- #
+    def find(self, want_serial=None):
+        c = self.c
+        lst = c.POINTER(c.c_void_p)()
+        n = self.l.libusb_get_device_list(self.ctx, c.byref(lst))
+        if n < 0:
+            raise RuntimeError("libusb_get_device_list failed")
+        found = []
+        try:
+            for i in range(n):
+                dev = lst[i]
+                d = self.Desc()
+                if self.l.libusb_get_device_descriptor(dev, c.byref(d)) != 0:
+                    continue
+                if d.idVendor != VID:
+                    continue
+                if d.idProduct not in PIDS and (d.idProduct & 0xFF00) != 0x0E00:
+                    continue
+                serial = None
+                h = c.c_void_p()
+                if self.l.libusb_open(dev, c.byref(h)) == 0:
+                    if d.iSerialNumber:
+                        buf = c.create_string_buffer(256)
+                        r = self.l.libusb_get_string_descriptor_ascii(
+                            h, d.iSerialNumber, buf, 256)
+                        if r > 0:
+                            serial = buf.value.decode("latin-1")
+                    self.l.libusb_close(h)
+                found.append((d.idVendor, d.idProduct, serial))
+        finally:
+            # keep the list alive until we've reopened by iteration below;
+            # simplest: re-open fresh in open_write()
+            self.l.libusb_free_device_list(lst, 1)
+        if want_serial:
+            found = [f for f in found if f[2] == want_serial]
+        return found
+
+    # -- open + claim + return (handle, out_ep) -------------------------- #
+    def open_write(self, want_serial=None):
+        c = self.c
+        lst = c.POINTER(c.c_void_p)()
+        n = self.l.libusb_get_device_list(self.ctx, c.byref(lst))
+        if n < 0:
+            raise RuntimeError("libusb_get_device_list failed")
+        handle = None
+        out_ep = 0x01
+        iface = 0
+        try:
+            for i in range(n):
+                dev = lst[i]
+                d = self.Desc()
+                if self.l.libusb_get_device_descriptor(dev, c.byref(d)) != 0:
+                    continue
+                if d.idVendor != VID:
+                    continue
+                if d.idProduct not in PIDS and (d.idProduct & 0xFF00) != 0x0E00:
+                    continue
+                h = c.c_void_p()
+                if self.l.libusb_open(dev, c.byref(h)) != 0:
+                    continue
+                if want_serial and d.iSerialNumber:
+                    buf = c.create_string_buffer(256)
+                    r = self.l.libusb_get_string_descriptor_ascii(
+                        h, d.iSerialNumber, buf, 256)
+                    if r <= 0 or buf.value.decode("latin-1") != want_serial:
+                        self.l.libusb_close(h)
+                        continue
+                handle = h
+                break
+        finally:
+            self.l.libusb_free_device_list(lst, 1)
+
+        if handle is None:
+            return None
+
+        try:
+            self.l.libusb_set_auto_detach_kernel_driver(handle, 1)
+        except Exception:
+            pass
+        try:
+            if self.l.libusb_kernel_driver_active(handle, iface) == 1:
+                self.l.libusb_detach_kernel_driver(handle, iface)
+        except Exception:
+            pass
+
+        rc = self.l.libusb_claim_interface(handle, iface)
+        if rc != 0:
+            self.l.libusb_close(handle)
+            raise RuntimeError(f"libusb_claim_interface failed (rc={rc}); "
+                               f"check the udev rule / group membership")
+        self._handle = handle
+        self._iface = iface
+        self._out_ep = out_ep
+        return handle
+
+    def write(self, data, timeout_ms=15000):
+        c = self.c
+        mv = memoryview(data)
+        sent_total = 0
+        CH = 16384
+        while sent_total < len(mv):
+            chunk = bytes(mv[sent_total:sent_total + CH])
+            transferred = c.c_int(0)
+            rc = self.l.libusb_bulk_transfer(
+                self._handle, self._out_ep, chunk, len(chunk),
+                c.byref(transferred), timeout_ms)
+            if rc != 0:
+                raise RuntimeError(f"libusb_bulk_transfer rc={rc} "
+                                   f"after {sent_total} bytes")
+            sent_total += transferred.value
+            if transferred.value == 0:
+                raise RuntimeError("bulk transfer stalled (0 bytes)")
+        return sent_total
+
+    def close(self):
+        try:
+            self.l.libusb_release_interface(self._handle, self._iface)
+        except Exception:
+            pass
+        try:
+            self.l.libusb_close(self._handle)
+        except Exception:
+            pass
+        try:
+            self.l.libusb_exit(self.ctx)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# discovery mode (no args)
+# --------------------------------------------------------------------------- #
+
+def discover():
+    # always advertise the generic URI so the queue can be created before the
+    # printer is powered on
+    print('direct tmt70 "Unknown" "EPSON TM-T70II (ESC/POS)" "EPSON TM-T70II"')
+    try:
+        lu = LibUsb()
+        for vid, pid, serial in lu.find():
+            uri = f"tmt70://{vid:04x}:{pid:04x}"
+            info = f"EPSON TM-T70II ({vid:04x}:{pid:04x})"
+            if serial:
+                uri += f"/{serial}"
+                info += f" s/n {serial}"
+            print(f'direct {uri} "EPSON" "{info}" ""')
+        lu.close()
+    except Exception as e:                          # noqa: BLE001
+        WARN(f"USB scan skipped: {e}")
+    return OK
+
+
+# --------------------------------------------------------------------------- #
+# print mode
+# --------------------------------------------------------------------------- #
+
+def read_input(argv):
+    if len(argv) > 6 and argv[6]:
+        with open(argv[6], "rb") as fh:
+            return fh.read()
+    return sys.stdin.buffer.read()
+
+
+def sink_file(path, data):
+    with open(path, "wb") as fh:
+        fh.write(data)
+    INFO(f"wrote {len(data)} bytes to {path}")
+    return OK
+
+
+def sink_socket(host, port, data):
+    for attempt in range(1, 4):
+        try:
+            with socket.create_connection((host, port), timeout=20) as s:
+                s.sendall(data)
+            INFO(f"sent {len(data)} bytes to {host}:{port}")
+            return OK
+        except OSError as e:
+            WARN(f"socket attempt {attempt} to {host}:{port} failed: {e}")
+            time.sleep(2 * attempt)
+    return RETRY
+
+
+def sink_usb(serial, data):
+    try:
+        lu = LibUsb()
+    except Exception as e:                          # noqa: BLE001
+        ERROR(f"libusb unavailable: {e}")
+        return FAILED
+    try:
+        for attempt in range(1, 6):
+            h = lu.open_write(serial)
+            if h is None:
+                STATE("+connecting-to-device")
+                WARN(f"TM-T70II not found on USB (attempt {attempt}); retrying")
+                time.sleep(min(30, 3 * attempt))
+                continue
+            STATE("-connecting-to-device")
+            try:
+                sent = lu.write(data)
+                INFO(f"sent {sent} bytes over USB")
+                return OK
+            except RuntimeError as e:
+                ERROR(f"USB write failed: {e}")
+                return RETRY_CURRENT
+        return RETRY
+    finally:
+        lu.close()
+
+
+URI_RE = re.compile(r"""^tmt70://([0-9a-fA-F]{4}):([0-9a-fA-F]{4})(?:/(.+))?$""")
+
+
+def main(argv):
+    if len(argv) == 1:
+        return discover()
+
+    uri = os.environ.get("DEVICE_URI", "")
+    if not uri and len(argv) > 0:
+        uri = ""
+    INFO(f"tmt70 backend: uri={uri!r} argv={argv[1:]}")
+
+    data = read_input(argv)
+    if not data:
+        WARN("empty job - nothing to print")
+        return OK
+
+    dry = os.environ.get("TMT70_DRYRUN")
+    if dry:
+        try:
+            sink_file(dry, data)
+        except OSError as e:
+            WARN(f"TMT70_DRYRUN write failed: {e}")
+
+    if uri.startswith("file:"):
+        path = uri[len("file://"):] if uri.startswith("file://") else uri[len("file:"):]
+        return sink_file(path or "/dev/stdout", data)
+
+    if uri.startswith("socket://"):
+        rest = uri[len("socket://"):]
+        host, _, port = rest.partition(":")
+        return sink_socket(host, int(port or 9100), data)
+
+    if uri.startswith("dryrun:"):
+        return sink_file(os.environ.get("TMT70_DRYRUN", "/tmp/tmt70.bin"), data)
+
+    m = URI_RE.match(uri)
+    if m:
+        serial = m.group(3)
+        return sink_usb(serial, data)
+
+    if uri.startswith("tmt70:/dev/"):
+        devpath = uri[len("tmt70:"):]
+        try:
+            fd = os.open(devpath, os.O_WRONLY)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            INFO(f"wrote {len(data)} bytes to {devpath}")
+            return OK
+        except OSError as e:
+            ERROR(f"{devpath}: {e}")
+            return RETRY if e.errno in (errno.EBUSY, errno.EAGAIN) else FAILED
+
+    # bare "tmt70://" with no ids, or unknown -> try USB autodetect
+    return sink_usb(None, data)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        sys.exit(STOP)

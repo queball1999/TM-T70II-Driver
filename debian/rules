@@ -1,0 +1,27 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+export DH_VERBOSE = 1
+PKG = epson-tmt70ii-escpos
+DEST = debian/$(PKG)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# syntax-check the two Python programs
+	python3 -m py_compile src/filter/rastertoescpos src/backend/tmt70
+
+override_dh_auto_install:
+	install -D -m0755 src/filter/rastertoescpos $(DEST)/usr/lib/cups/filter/rastertoescpos
+	install -D -m0755 src/backend/tmt70         $(DEST)/usr/lib/cups/backend/tmt70
+	install -D -m0644 ppd/EPSON_TM-T70II.ppd    $(DEST)/usr/share/ppd/$(PKG)/EPSON_TM-T70II.ppd
+	install -D -m0644 udev/60-epson-tmt70ii.rules $(DEST)/lib/udev/rules.d/60-epson-tmt70ii.rules
+
+override_dh_fixperms:
+	dh_fixperms
+	chmod 0755 $(DEST)/usr/lib/cups/filter/rastertoescpos
+	chmod 0755 $(DEST)/usr/lib/cups/backend/tmt70
+
+override_dh_auto_test:
+	:

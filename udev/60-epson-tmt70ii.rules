@@ -1,0 +1,15 @@
+# EPSON TM-T70II (and common TM/BA siblings) -- vendor-specific USB class.
+# The kernel usblp driver does not bind these, so CUPS talks to them via libusb
+# from the "tmt70" backend.  Give the "lp" group read/write access and tag the
+# node for local-session (uaccess) use.
+#
+# Installed to /lib/udev/rules.d/60-epson-tmt70ii.rules
+# Reload with:  sudo udevadm control --reload && sudo udevadm trigger
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="0202", MODE="0660", GROUP="lp", TAG+="uaccess"
+
+# TM printers that enumerate in the 0x0Exx "TM/BA/EU controller" range
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTRS{bDeviceClass}=="00", ENV{ID_USB_INTERFACES}=="*:07????:*", MODE="0660", GROUP="lp", TAG+="uaccess"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="0e15", MODE="0660", GROUP="lp", TAG+="uaccess"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="0e03", MODE="0660", GROUP="lp", TAG+="uaccess"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="0e28", MODE="0660", GROUP="lp", TAG+="uaccess"

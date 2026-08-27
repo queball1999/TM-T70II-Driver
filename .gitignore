@@ -1,0 +1,16 @@
+# build output
+/build/
+*.deb
+*.buildinfo
+*.changes
+debian/.debhelper/
+debian/files
+debian/epson-tmt70ii-escpos/
+debian/debhelper-build-stamp
+obj-*/
+
+# capture / scratch
+/capture/
+*.prn
+*.pyc
+__pycache__/

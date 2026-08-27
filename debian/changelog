@@ -1,0 +1,11 @@
+epson-tmt70ii-escpos (1.0.0) unstable; urgency=medium
+
+  * Initial release.
+    - rastertoescpos CUPS raster filter (density, speed, 80/58 mm media,
+      180 rotation, blank-space reduction, left margin, copies, cut).
+    - tmt70 libusb backend for the vendor-class USB interface (04b8:0202),
+      with file:// and socket:// sinks and a TMT70_DRYRUN dump mode.
+    - EPSON_TM-T70II.ppd exposing the above as printer preferences.
+    - udev rule granting the lp group access to the device.
+
+ -- epson-tmt70ii-escpos project <root@localhost>  Wed, 27 Aug 2026 00:00:00 +0000

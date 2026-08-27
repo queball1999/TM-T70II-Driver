@@ -1,0 +1,17 @@
+#!/bin/sh
+# postrm for epson-tmt70ii-escpos
+set -e
+
+case "$1" in
+    remove|purge)
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules 2>/dev/null || true
+        fi
+        if command -v invoke-rc.d >/dev/null 2>&1; then
+            invoke-rc.d cups reload 2>/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0
