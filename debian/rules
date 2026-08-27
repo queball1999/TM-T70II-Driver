@@ -16,7 +16,7 @@ override_dh_auto_install:
 	install -D -m0755 src/filter/rastertoescpos $(DEST)/usr/lib/cups/filter/rastertoescpos
 	install -D -m0755 src/backend/tmt70         $(DEST)/usr/lib/cups/backend/tmt70
 	install -D -m0644 ppd/EPSON_TM-T70II.ppd    $(DEST)/usr/share/ppd/$(PKG)/EPSON_TM-T70II.ppd
-	install -D -m0644 udev/60-epson-tmt70ii.rules $(DEST)/lib/udev/rules.d/60-epson-tmt70ii.rules
+	install -D -m0644 udev/60-epson-tmt70ii.rules $(DEST)/usr/lib/udev/rules.d/60-epson-tmt70ii.rules
 
 override_dh_fixperms:
 	dh_fixperms

@@ -13,11 +13,11 @@ BUILDROOT="${BUILDROOT:-$HOME/build/$PKG}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1"; MISSING=1; }; }
 MISSING=0
-for c in dpkg-buildpackage debhelper rsync python3; do need "$c"; done
+for c in dpkg-buildpackage dh fakeroot rsync python3; do need "$c"; done
 if [ "$MISSING" = 1 ]; then
     echo
     echo "Install build deps:"
-    echo "  sudo apt install build-essential debhelper dpkg-dev rsync python3 lintian"
+    echo "  sudo apt install build-essential debhelper dpkg-dev fakeroot rsync python3 lintian"
     exit 1
 fi
 
@@ -29,9 +29,13 @@ rsync -a --delete \
       --exclude 'debian/.debhelper/' --exclude '__pycache__/' \
       "$SRC"/ "$BUILDROOT"/
 
+# /mnt/c (DrvFs) presents every file as 0777; debhelper then tries to *execute*
+# debian/*.docs, *.install, ... as "executable config files".  Normalise.
+find "$BUILDROOT/debian" -maxdepth 1 -type f -exec chmod 0644 {} +
 chmod 0755 "$BUILDROOT/src/filter/rastertoescpos" "$BUILDROOT/src/backend/tmt70"
 chmod 0755 "$BUILDROOT/debian/rules" \
            "$BUILDROOT/debian/postinst" "$BUILDROOT/debian/postrm"
+find "$BUILDROOT/tools" -name '*.sh' -exec chmod 0755 {} + 2>/dev/null || true
 
 echo "==> dpkg-buildpackage"
 ( cd "$BUILDROOT" && dpkg-buildpackage -us -uc -b )

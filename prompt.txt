@@ -1,5 +1,0 @@
-There is an epson receipt printer connected to this computer (TM-T70II). Can we reverse engineer a print driver for this printer to work on Linux? I have WSL installed (Ubuntu-26.04) on this system so you can use that for testing. Ideally we want to end up with a .deb package we can install on debian or ubuntu to get this printer working. The challenge will also be ensuring we can manage the printer preferences such as resolution, color, copies, layout, watermark, etc. Look at what is currently available in windows.
-
-
-
-Ask the user anything that remains unclear.

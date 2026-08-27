@@ -14,3 +14,7 @@ obj-*/
 *.prn
 *.pyc
 __pycache__/
+
+# Binaries
+.deb
+.exe

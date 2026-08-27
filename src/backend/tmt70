@@ -62,6 +62,8 @@ class LibUsb:
         c = ctypes
 
         class Desc(c.Structure):
+            # libusb_device_descriptor: every u16 is already 2-byte aligned,
+            # so the natural layout matches the wire layout (no _pack_ needed).
             _fields_ = [
                 ("bLength", c.c_uint8), ("bDescriptorType", c.c_uint8),
                 ("bcdUSB", c.c_uint16), ("bDeviceClass", c.c_uint8),
@@ -73,29 +75,82 @@ class LibUsb:
             ]
         self.Desc = Desc
 
+        class EndpointDesc(c.Structure):
+            _fields_ = [
+                ("bLength", c.c_uint8), ("bDescriptorType", c.c_uint8),
+                ("bEndpointAddress", c.c_uint8), ("bmAttributes", c.c_uint8),
+                ("wMaxPacketSize", c.c_uint16), ("bInterval", c.c_uint8),
+                ("bRefresh", c.c_uint8), ("bSynchAddress", c.c_uint8),
+                ("extra", c.c_void_p), ("extra_length", c.c_int),
+            ]
+
+        class IfaceDesc(c.Structure):
+            _fields_ = [
+                ("bLength", c.c_uint8), ("bDescriptorType", c.c_uint8),
+                ("bInterfaceNumber", c.c_uint8), ("bAlternateSetting", c.c_uint8),
+                ("bNumEndpoints", c.c_uint8), ("bInterfaceClass", c.c_uint8),
+                ("bInterfaceSubClass", c.c_uint8), ("bInterfaceProtocol", c.c_uint8),
+                ("iInterface", c.c_uint8),
+                ("endpoint", c.POINTER(EndpointDesc)),
+                ("extra", c.c_void_p), ("extra_length", c.c_int),
+            ]
+
+        class Iface(c.Structure):
+            _fields_ = [("altsetting", c.POINTER(IfaceDesc)),
+                        ("num_altsetting", c.c_int)]
+
+        class ConfigDesc(c.Structure):
+            _fields_ = [
+                ("bLength", c.c_uint8), ("bDescriptorType", c.c_uint8),
+                ("wTotalLength", c.c_uint16), ("bNumInterfaces", c.c_uint8),
+                ("bConfigurationValue", c.c_uint8), ("iConfiguration", c.c_uint8),
+                ("bmAttributes", c.c_uint8), ("MaxPower", c.c_uint8),
+                ("interface", c.POINTER(Iface)),
+                ("extra", c.c_void_p), ("extra_length", c.c_int),
+            ]
+        self.ConfigDesc = ConfigDesc
+
+        dev_p = c.c_void_p                        # libusb_device *
+        devlist_p = c.POINTER(c.c_void_p)         # libusb_device **
+        handle_p = c.c_void_p                     # libusb_device_handle *
+        DescP = c.POINTER(Desc)
+
         L = self.l
-        L.libusb_init.argtypes = [c.c_void_p]
-        L.libusb_get_device_list.argtypes = [c.c_void_p, c.POINTER(c.POINTER(c.c_void_p))]
-        L.libusb_get_device_list.restype = c.c_ssize_t
-        L.libusb_get_device_descriptor.argtypes = [c.c_void_p, c.c_void_p]
-        L.libusb_open.argtypes = [c.c_void_p, c.POINTER(c.c_void_p)]
-        L.libusb_close.argtypes = [c.c_void_p]
-        L.libusb_get_string_descriptor_ascii.argtypes = [
-            c.c_void_p, c.c_uint8, c.c_char_p, c.c_int]
-        L.libusb_set_auto_detach_kernel_driver.argtypes = [c.c_void_p, c.c_int]
-        L.libusb_kernel_driver_active.argtypes = [c.c_void_p, c.c_int]
-        L.libusb_detach_kernel_driver.argtypes = [c.c_void_p, c.c_int]
-        L.libusb_claim_interface.argtypes = [c.c_void_p, c.c_int]
-        L.libusb_release_interface.argtypes = [c.c_void_p, c.c_int]
-        L.libusb_bulk_transfer.argtypes = [
-            c.c_void_p, c.c_uint8, c.c_char_p, c.c_int,
-            c.POINTER(c.c_int), c.c_uint]
-        L.libusb_get_active_config_descriptor.argtypes = [
-            c.c_void_p, c.c_void_p]
-        L.libusb_free_device_list.argtypes = [c.POINTER(c.POINTER(c.c_void_p)), c.c_int]
-        L.libusb_exit.argtypes = [c.c_void_p]
+        L.libusb_init.argtypes = [c.POINTER(c.c_void_p)]
         L.libusb_init.restype = c.c_int
+        L.libusb_exit.argtypes = [c.c_void_p]
+        L.libusb_get_device_list.argtypes = [c.c_void_p, c.POINTER(devlist_p)]
+        L.libusb_get_device_list.restype = c.c_ssize_t
+        L.libusb_free_device_list.argtypes = [devlist_p, c.c_int]
+        L.libusb_free_device_list.restype = None
+        L.libusb_get_device_descriptor.argtypes = [dev_p, DescP]
+        L.libusb_get_device_descriptor.restype = c.c_int
+        L.libusb_open.argtypes = [dev_p, c.POINTER(handle_p)]
+        L.libusb_open.restype = c.c_int
+        L.libusb_close.argtypes = [handle_p]
+        L.libusb_close.restype = None
+        L.libusb_get_string_descriptor_ascii.argtypes = [
+            handle_p, c.c_uint8, c.c_char_p, c.c_int]
         L.libusb_get_string_descriptor_ascii.restype = c.c_int
+        L.libusb_set_auto_detach_kernel_driver.argtypes = [handle_p, c.c_int]
+        L.libusb_set_auto_detach_kernel_driver.restype = c.c_int
+        L.libusb_kernel_driver_active.argtypes = [handle_p, c.c_int]
+        L.libusb_kernel_driver_active.restype = c.c_int
+        L.libusb_detach_kernel_driver.argtypes = [handle_p, c.c_int]
+        L.libusb_detach_kernel_driver.restype = c.c_int
+        L.libusb_claim_interface.argtypes = [handle_p, c.c_int]
+        L.libusb_claim_interface.restype = c.c_int
+        L.libusb_release_interface.argtypes = [handle_p, c.c_int]
+        L.libusb_release_interface.restype = c.c_int
+        L.libusb_bulk_transfer.argtypes = [
+            handle_p, c.c_uint8, c.c_char_p, c.c_int,
+            c.POINTER(c.c_int), c.c_uint]
+        L.libusb_bulk_transfer.restype = c.c_int
+        L.libusb_get_active_config_descriptor.argtypes = [
+            dev_p, c.POINTER(c.POINTER(ConfigDesc))]
+        L.libusb_get_active_config_descriptor.restype = c.c_int
+        L.libusb_free_config_descriptor.argtypes = [c.POINTER(ConfigDesc)]
+        L.libusb_free_config_descriptor.restype = None
 
         self.ctx = c.c_void_p()
         if L.libusb_init(c.byref(self.ctx)) != 0:
@@ -138,7 +193,29 @@ class LibUsb:
             found = [f for f in found if f[2] == want_serial]
         return found
 
-    # -- open + claim + return (handle, out_ep) -------------------------- #
+    # -- pick (interface_number, bulk_out_ep) from the active config ------ #
+    def _scan_iface_ep(self, dev):
+        c = self.c
+        cfgp = c.POINTER(self.ConfigDesc)()
+        if self.l.libusb_get_active_config_descriptor(dev, c.byref(cfgp)) != 0:
+            return 0, 0x01
+        try:
+            cfg = cfgp[0]
+            for ii in range(cfg.bNumInterfaces):
+                iface = cfg.interface[ii]
+                for aa in range(iface.num_altsetting):
+                    alt = iface.altsetting[aa]
+                    for ee in range(alt.bNumEndpoints):
+                        ep = alt.endpoint[ee]
+                        is_out = (ep.bEndpointAddress & 0x80) == 0
+                        is_bulk = (ep.bmAttributes & 0x03) == 0x02
+                        if is_out and is_bulk:
+                            return alt.bInterfaceNumber, ep.bEndpointAddress
+            return 0, 0x01
+        finally:
+            self.l.libusb_free_config_descriptor(cfgp)
+
+    # -- open + claim + return handle ---------------------------------- #
     def open_write(self, want_serial=None):
         c = self.c
         lst = c.POINTER(c.c_void_p)()
@@ -160,6 +237,8 @@ class LibUsb:
                     continue
                 h = c.c_void_p()
                 if self.l.libusb_open(dev, c.byref(h)) != 0:
+                    WARN("found the printer but libusb_open failed "
+                         "(permission? add user to 'lp', reload udev)")
                     continue
                 if want_serial and d.iSerialNumber:
                     buf = c.create_string_buffer(256)
@@ -168,6 +247,7 @@ class LibUsb:
                     if r <= 0 or buf.value.decode("latin-1") != want_serial:
                         self.l.libusb_close(h)
                         continue
+                iface, out_ep = self._scan_iface_ep(dev)
                 handle = h
                 break
         finally:
@@ -175,6 +255,7 @@ class LibUsb:
 
         if handle is None:
             return None
+        INFO(f"using interface {iface}, bulk OUT endpoint 0x{out_ep:02x}")
 
         try:
             self.l.libusb_set_auto_detach_kernel_driver(handle, 1)

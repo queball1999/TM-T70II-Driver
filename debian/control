@@ -1,7 +1,7 @@
 Source: epson-tmt70ii-escpos
 Section: text
 Priority: optional
-Maintainer: epson-tmt70ii-escpos project <root@localhost>
+Maintainer: Quynn Bell <quynnbell@protonmail.com>
 Build-Depends: debhelper-compat (= 13)
 Standards-Version: 4.6.2
 Rules-Requires-Root: no

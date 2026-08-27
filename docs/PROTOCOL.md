@@ -2,10 +2,11 @@
 
 ## How these notes were produced
 
-- `tools/win-capture.ps1` builds a throwaway queue on the **same Epson APD4 driver**
-  (`EPSON TM-T70 ReceiptE4`) pointed at a Windows FILE port, mirrors the real queue's
-  driver preferences onto it, and prints a set of text documents. One `.prn` per document
-  lands in `capture/`.
+- `tools/win-capture.ps1` prints a set of text documents through the Windows APD4
+  driver (`EPSON TM-T70 ReceiptE4`) with its output redirected to a FILE port; one
+  `.prn` per document lands in `capture/`. `-Method SwapPort` (default) temporarily
+  repoints the **real** queue so its actual Printing-preferences are what get
+  captured; `-Method CloneQueue` uses a throwaway queue with driver defaults.
 - `tools/escpos_dis.py` / `tools/band_geom.py` decode those streams.
 - Command semantics cross-checked against Epson's public **ESC/POS Command Reference**
   (TM printer, "Commands in Code Order").
@@ -72,14 +73,33 @@ above.
 | `EndOfJobCut` `PartialCut` / `FullCut` / `None` | `GS V 66 n` / `GS V 65 n` / (nothing) | capture ✔ (APD uses 65) | implemented |
 | `Copies` | re-emit body + cut between copies | — | implemented |
 | `BlankReduction` `Off` / `TopBottom` / `All` | trim leading/trailing blank scanlines; `All` also collapses interior blank runs | APD "paper reduction" analogue | implemented |
-| `Density` `Light` / `Normal` / `Dark` | `GS ( K` **fn=49** (pL pH = 02 00, m=49, n∈{250,0,6}=light/normal/dark by convention) | Epson reference | **doc-based — capture pending** |
+| `Density` `Light` / `Normal` / `Dark` | `GS ( K` **fn=49** (`1D 28 4B 02 00 31 n`; n = 250..255 lighter / 0 default / 1..6 darker) | Epson reference; verified accepted on TM-T70II hardware | implemented |
 | `PrintSpeed` `1`‑`4` / `Auto` | `GS ( K` **fn=50** (pL pH = 02 00, m=50, n = level) | Epson reference | **doc-based — capture pending** |
 
-To confirm the two "capture pending" rows byte-for-byte: set that one control in the
-Windows *Printing preferences* dialog for **EPSON TM-T70II Receipt**, then run
-`./tools/win-capture.ps1 -Tag density-dark` (etc.) and diff with `tools/escpos_dis.py`.
-If APD turns out to encode them via memory switch (`GS ( E` fn=3) or `GS ( M` instead,
-switch the filter's `_density()` / `_speed()` helpers — they are isolated for exactly this.
+The whole chain (`lp` → texttopdf/pdftoraster → `rastertoescpos` → backend) has been
+run end-to-end on Ubuntu 26.04 (CUPS 2.4.16) against the real printer over USB, and
+every option above verified to produce the expected ESC/POS.
+
+### What the APD capture showed about density / speed
+
+`baseline` and `density-dark` were captured through the **real queue** — the queue's
+port is swapped to a FILE port so its actual Printing-preferences apply
+(`tools/win-capture.ps1 -Method SwapPort`). The two streams came out **byte-identical
+except a 1-dot rounding in the leading `ESC J` feed**. There is **no `GS ( E`
+(memory switch), no `GS ( K`, no `GS ( M`** anywhere in the APD output.
+
+Conclusion: **APD sends no per-job density/speed command.** On the TM-T70II those are
+printer-resident settings (the NV "print density" memory switch), written once by the
+Epson *TM Utility* or the driver's "save settings to printer" action over a separate
+config exchange — not on every receipt.
+
+This driver instead emits the documented **per-job** `GS ( K` fn49/fn50 at the top of
+each job. The printer honours it for that job (`GS ( K 02 00 31 06` for
+`Density=dark` was accepted with no error during the hardware print test) and it
+requires no NV writes. To make density persistent, set it once from the Windows Epson
+TM Utility — it applies to jobs from this driver too. `EscposOut.density()` /
+`.speed()` in the filter are isolated so the mechanism can be swapped without
+touching the raster path.
 
 ## References
 
