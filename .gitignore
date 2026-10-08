@@ -18,3 +18,12 @@ __pycache__/
 # Binaries
 .deb
 .exe
+
+# windows build output
+/build/win/
+*.zip
+tmt70print-setup-*.exe
+win/vendor/*.dll
+win/python/
+win/monitor/**/*.dll
+win/monitor/**/*.a

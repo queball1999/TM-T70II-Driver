@@ -1,0 +1,49 @@
+;
+; WinUSB installation for the EPSON TM-T70II (USB\VID_04B8&PID_0202).
+;
+; Binds the in-box winusb.sys as the device's function driver, replacing
+; whatever vendor-class driver Windows picked (TMUSB, or none). This is the
+; unsigned-but-locally-trusted equivalent of doing it by hand in Zadig --
+; see win\winusb\bind-winusb.ps1, which signs this package with a
+; self-generated certificate and installs that certificate into the local
+; machine's trust store before handing this INF to pnputil. Adapted from
+; Microsoft's universal WinUSB INF template:
+; https://learn.microsoft.com/windows-hardware/drivers/usbcon/winusb-installation
+;
+; SPDX-License-Identifier: GPL-2.0-or-later
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USBDevice
+ClassGUID   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
+Provider    = %ManufacturerName%
+CatalogFile = tmt70-winusb.cat
+DriverVer   = 09/01/2026,1.0.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTamd64,NTarm64
+
+[Standard.NTamd64]
+%DeviceName% = USB_Install, USB\VID_04B8&PID_0202
+
+[Standard.NTarm64]
+%DeviceName% = USB_Install, USB\VID_04B8&PID_0202
+
+[USB_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[USB_Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[USB_Install.HW]
+AddReg = Dev_AddReg
+
+[Dev_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{b68433ba-ee2e-4edc-a24d-7ce32d71fece}"
+
+[Strings]
+ManufacturerName = "epson-tmt70ii-escpos"
+DeviceName        = "EPSON TM-T70II (WinUSB)"

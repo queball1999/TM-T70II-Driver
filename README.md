@@ -33,10 +33,36 @@ make print-test LP_OPTS='-o Density=dark -o EndOfJobCut=full'
   step by step, with troubleshooting
 * [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — building and validating from Windows via
   WSL2, including forwarding the USB printer with `usbipd`
+* [docs/WINDOWS.md](docs/WINDOWS.md) — Windows support: `tmt70print`, zero .NET,
+  no Epson APD or OPOS ADK
 * [docs/README.md](docs/README.md) — option reference / Makefile targets / testing guide
 * [docs/NETWORK.md](docs/NETWORK.md) — sharing the queue to other machines; Ethernet units
 * [docs/PROTOCOL.md](docs/PROTOCOL.md) — the reverse-engineering write-up (what the
   Windows driver actually sends, and how each option maps to ESC/POS)
+
+## Windows
+
+A command-line front end, `tmt70print`, prints from Windows with **zero .NET** —
+no Epson APD, no `EPSON_OPOS_ADK_FOR_NET_*.exe`, no COM registration, no Pillow.
+
+```powershell
+.\tools\build-win.ps1 -Fetch          # -> epson-tmt70ii-escpos-win_1.0.0.zip + setup .exe
+tmt70print receipt.txt --density dark --cut full
+tmt70print logo.png --media X58mm
+tmt70print receipt.txt --device socket://10.0.0.50:9100
+```
+
+It imports `src/filter/rastertoescpos` and `src/backend/tmt70` unmodified, so
+image output is byte-for-byte identical to Linux — `python win/selftest.py`
+asserts that (61 checks, no printer needed). Transports: WinUSB via libusb, raw
+TCP 9100, or RAW through an existing Windows queue.
+
+A real, native queue is also available — "EPSON TM-T70II (tmt70print)" in
+Settings → Printers, usable by any app's File → Print, no CLI needed — via a
+custom Port Monitor (`win/monitor/`) paired with Windows' own inbox "Generic
+/ Text Only" driver, which needs no signing. Text only for now; see
+[docs/WINDOWS.md](docs/WINDOWS.md) for the setup, limits, and the
+signing/preferences-dialog trade-off behind the CLI-first design.
 
 ## Layout
 
@@ -49,6 +75,9 @@ debian/                       .deb packaging (debhelper)
 tools/                        win-capture.ps1, escpos_dis.py, mkraster.py,
                               selftest.sh, band_geom.py, build.sh
 Makefile                      build / test / install / queue / decode targets
+win/                          Windows front end (tmt70print) + Inno Setup packaging
+win/monitor/                  native print queue (Port Monitor + inbox driver, no signing)
+tools/build-win.ps1           Windows zip / installer build
 ```
 
 ## Status
@@ -67,5 +96,19 @@ docs/PROTOCOL.md.
 
 USB note: the TM-T70II is a vendor-class device, so on WSL2 it must be attached
 with `usbipd`; on a normal Linux box the shipped udev rule is enough.
+
+Windows front end validated on real hardware: `python win/selftest.py` passes
+61/61 (parity against the Linux filter's byte stream, ESC/POS assertions, image
+decoders, dithering, text wrapping/code pages, URI parsing, the file sink, and
+the CLI), and physical receipts — text, a logo image, and a combined
+multi-part receipt — printed successfully from Windows via the spooler-RAW
+transport (`tmt70print file --device "printer://..."`).
+
+The native print queue (`win/monitor/`, see docs/WINDOWS.md option D) is also
+validated end-to-end: an unsigned, locally-registered Port Monitor DLL loads
+into `spoolsv.exe` under real Windows security policy (no signing prompt, no
+policy block), and a real Notepad File → Print job flowed through it to a
+physical printed receipt. Text-only in this version; full image/graphics
+parity with the Linux side remains an open research question.
 
 License: GPL-2.0-or-later.
